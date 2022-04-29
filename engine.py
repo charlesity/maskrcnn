@@ -73,9 +73,69 @@ def color_masks(mask, threshold):
     color_spectrum = np.random.randint(0, 256, size=len(mask))
     clk_mask = np.zeros(mask[0].shape, dtype=np.int16)
     for idx, eachPredMask in enumerate(mask):
-        eachPredMask[eachPredMask > threshold] = color_spectrum[idx]
+        ev = eachPredMask > threshold
+        if ev.any():
+            eachPredMask[ev] = color_spectrum[idx]
+        else:
+            eachPredMask = eachPredMask.astype(np.int16)
         clk_mask = np.maximum(eachPredMask.astype(np.int16), clk_mask)
     return clk_mask
+
+@torch.inference_mode()
+def evaluate_and_view(model, data_loader, device, ds_name, score_threshold=0.50, mask_threshold =0.50):
+    cpu_device = torch.device("cpu")
+    model.eval()
+    file_number = 0
+    for images, targets in (data_loader):
+        images = list(img.to(device) for img in images)
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        outputs = model(images)
+        outputs = [{k: v.to(cpu_device) for k, v in t.items()} for t in outputs]
+        true_targets = [{k: v.to(cpu_device) for k, v in t.items()} for t in targets]
+
+        # process the batches of predictions
+        for o_idx, pred in enumerate(outputs):
+            aPredMask = pred['masks'].detach().cpu().numpy()
+            aTrueMask = true_targets[o_idx]['masks'].detach().cpu().numpy()
+            scores = pred['scores'].detach().cpu().numpy()
+
+            input_img = images[o_idx].detach().cpu().numpy()
+
+            aPredMask= aPredMask[scores>score_threshold]
+            if not len(aPredMask)>0:
+                clk_pred_mask = np.zeros((input_img[o_idx].shape[1],input_img.shape[2]))
+            elif len(aPredMask) == 1:
+                clk_pred_mask = color_masks(aPredMask.reshape(1, aPredMask.shape[2],aPredMask.shape[3]), mask_threshold)
+            else:
+                clk_pred_mask = color_masks(aPredMask.squeeze(), mask_threshold)
+
+
+            clk_true_mask = color_masks(aTrueMask.squeeze(), mask_threshold)
+
+            # slice to match output for nenb
+            clk_pred_mask = clk_pred_mask[0:-80, 0:-80]
+            clk_true_mask = clk_true_mask[0:-80, 0:-80]
+            input_img=input_img.transpose((1,2,0))[0:-80, 0:-80]
+            plt.subplot(1,3,1)
+            plt.imshow(input_img)
+            plt.subplot(1,3,2)
+            plt.imshow(clk_pred_mask)
+            plt.subplot(1,3,3)
+            plt.imshow(clk_true_mask)
+            plt.show()
+
+            pred_fig = plt.figure()
+            plt.imshow(clk_pred_mask)
+            plt.xticks([])
+            plt.yticks([])
+            plt.tight_layout()
+
+            file_number+=1
+            pred_fig.savefig(ds_name+"_sample_{}_pred.eps".format(file_number), format='eps')
+            print()
+
 
 
 @torch.inference_mode()
@@ -98,15 +158,29 @@ def evaluate_metric(model, data_loader, device, score_threshold=0.10, mask_thres
             aTrueMask = true_targets[o_idx]['masks'].detach().cpu().numpy()
             scores = pred['scores'].detach().cpu().numpy()
 
+            input_img = images[o_idx].detach().cpu().numpy()
+
             aPredMask= aPredMask[scores>score_threshold]
             if not len(aPredMask)>0:
-                continue
-            input_img = images[o_idx].detach().cpu().numpy()
-            clk_pred_mask =color_masks(aPredMask.squeeze(), mask_threshold)
+                clk_pred_mask = np.zeros((input_img.shape[2], input_img.shape[3]))
+            elif len(aPredMask) == 1:
+                clk_pred_mask = color_masks(aPredMask.reshape(1, aPredMask.shape[2],aPredMask.shape[3]), mask_threshold)
+            else:
+                clk_pred_mask = color_masks(aPredMask.squeeze(), mask_threshold)
+
+
+
             clk_true_mask = color_masks(aTrueMask.squeeze(), mask_threshold)
 
-            clk_pred_mask[clk_pred_mask>0] = 1
-            clk_true_mask[clk_true_mask>0] = 1
+            # slice to match output for nenb
+            clk_pred_mask = clk_pred_mask[0:-80, 0:-80]
+            clk_true_mask = clk_true_mask[0:-80, 0:-80]
+            input_img=input_img.transpose((1,2,0))[0:-80, 0:-80]
+
+            if (clk_pred_mask>0).any():
+                clk_pred_mask[clk_pred_mask>0] = 1
+            if (clk_true_mask>0).any():
+                clk_true_mask[clk_true_mask>0] = 1
             # plt.subplot(1,2,1)
             # plt.imshow(clk_pred_mask)
             # plt.subplot(1,2,2)
